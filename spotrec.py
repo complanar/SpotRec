@@ -324,7 +324,8 @@ class Spotify:
                     return
 
                 # Do not record ads
-                if self.parent.trackid.startswith("spotify:ad:"):
+                is_ad = self.parent.trackid.startswith("spotify:ad:") or self.parent.trackid.startswith("/com/spotify/ad")
+                if is_ad:
                     log.debug(f"[{app_name}] Skipping ad")
                     return
 
