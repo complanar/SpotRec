@@ -52,6 +52,8 @@ _pa_max_volume = "65536"
 _recording_time_before_song = 0.25
 _recording_time_after_song = 1.25
 _playback_time_before_seeking_to_beginning = 5.0
+_playback_time_before_skipping_to_next = 1.0
+_recording_minimum_time = 8.0 # this should be longer than _playback_time_before_seeking_to_beginning
 _shell_executable = "/bin/bash"  # Default: "/bin/sh"
 _shell_encoding = "utf-8"
 _ffmpeg_executable = "ffmpeg"  # Example: "/usr/bin/ffmpeg"
@@ -61,6 +63,7 @@ is_script_paused = False
 is_first_playing = True
 pa_spotify_sink_input_id = -1
 internal_track_counter = 1
+recorded_tracks = {}
 is_shutting_down = False
 
 
@@ -296,6 +299,7 @@ class Spotify:
 
             def run(self):
                 global is_script_paused
+                global recorded_tracks
                 global _output_directory
 
                 # Save current trackid to check later if it is still the same song playing (to avoid a bug when user skipped a song)
@@ -303,7 +307,7 @@ class Spotify:
 
                 # Stop the recording before
                 # Use copy() to not change the list during this method runs
-                self.parent.stop_old_recording(FFmpeg.instances.copy())
+                self.parent.stop_old_recording(FFmpeg.instances.copy(), self.parent.trackid, self.parent.track)
 
                 # This is currently the only way to seek to the beginning (let it Play for some seconds, Pause and send Previous)
                 time.sleep(_playback_time_before_seeking_to_beginning)
@@ -311,6 +315,21 @@ class Spotify:
                 # Check if still the same song is still playing, return if not
                 if self.trackid_when_thread_started != self.parent.trackid:
                     return
+
+                # Check if Spotify started looping over a song
+                log.info(recorded_tracks)
+                if self.parent.trackid in recorded_tracks.keys():
+                    global internal_track_counter
+
+                    internal_track_counter -= 1
+
+                    log.info(
+                        f"[{app_name}] Spotify has started looping over a song. Skipping.")
+                    time.sleep(_playback_time_before_skipping_to_next)
+                    self.parent.send_dbus_cmd("Next")
+
+                    return
+
 
                 # Spotify pauses when the playlist ended. Don't start a recording / return in this case.
                 if not self.parent.is_playing():
@@ -326,7 +345,7 @@ class Spotify:
                 # Do not record ads
                 is_ad = self.parent.trackid.startswith("spotify:ad:") or self.parent.trackid.startswith("/com/spotify/ad")
                 if is_ad:
-                    log.debug(f"[{app_name}] Skipping ad")
+                    log.info(f"[{app_name}] Skipping ad")
                     return
 
                 log.info(f"[{app_name}] Starting recording")
@@ -349,7 +368,7 @@ class Spotify:
 
                 # Start FFmpeg recording
                 ff = FFmpeg()
-                ff.record(self.out_dir,
+                ff.record(self.parent.trackid, self.parent.track, time.time(), self.out_dir,
                           self.parent.track, self.parent.get_metadata_for_ffmpeg())
 
                 # Give FFmpeg some time to start up before starting the song
@@ -361,16 +380,27 @@ class Spotify:
         record_thread = RecordThread(self)
         record_thread.start()
 
-    def stop_old_recording(self, instances):
+    def stop_old_recording(self, instances, track_id, track_title):
         # Stop the oldest FFmpeg instance (from recording of song before) (if one is running)
-        if len(instances) > 0:
+        for i in range(len(instances)):
             class OverheadRecordingStopThread(Thread):
                 def run(self):
+                    global recorded_tracks
+
+                    # Save recorded track ids to recognize spotify looping over a song
+                    # only save if recording is longer than [recording_minimum_time] seconds
+                    start_time = instances[i].start_time
+                    stop_time = time.time()
+                    duration = stop_time - start_time
+                    if duration >= _recording_minimum_time:
+                        recorded_tracks[f"{instances[i].track_id}"] = instances[i].track_title
+                        log.info(f"[{app_name}] recording finished: \"{track_title}\"")
+
                     # Record a little longer to not miss something
                     time.sleep(_recording_time_after_song)
 
                     # Stop the recording
-                    instances[0].stop_blocking()
+                    instances[i].stop_blocking()
 
             overhead_recording_stop_thread = OverheadRecordingStopThread()
             overhead_recording_stop_thread.start()
@@ -392,7 +422,7 @@ class Spotify:
             # Trigger event method
             self.playing_song_changed()
             # Update track counter
-            if _use_internal_track_counter:
+            if _use_internal_track_counter and new_trackid not in recorded_tracks.keys():
                 global internal_track_counter
                 internal_track_counter += 1
 
@@ -449,7 +479,10 @@ class Spotify:
 class FFmpeg:
     instances = []
 
-    def record(self, out_dir: str, file: str, metadata_for_file={}):
+    def record(self, track_id: str, track_title: str, start_time: float, out_dir: str, file: str, metadata_for_file={}):
+        self.track_id = track_id
+        self.track_title = track_title
+        self.start_time = start_time
         self.out_dir = out_dir
 
         self.pulse_input = _pa_recording_sink_name + ".monitor"
