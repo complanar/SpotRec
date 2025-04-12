@@ -286,6 +286,10 @@ class Spotify:
             ret = re.sub("__+", "__", ret)
 
         return ret
+    
+    def detect_ad(self):
+        self.is_ad = self.trackid.startswith("spotify:ad:") or self.trackid.startswith("/com/spotify/ad")
+        return self.is_ad
 
     def is_playing(self):
         return self.playbackstatus == "Playing"
@@ -317,7 +321,7 @@ class Spotify:
                     return
 
                 # Check if Spotify started looping over a song
-                log.info(recorded_tracks)
+                log.debug(recorded_tracks)
                 if self.parent.trackid in recorded_tracks.keys():
                     global internal_track_counter
 
@@ -343,8 +347,7 @@ class Spotify:
                     return
 
                 # Do not record ads
-                is_ad = self.parent.trackid.startswith("spotify:ad:") or self.parent.trackid.startswith("/com/spotify/ad")
-                if is_ad:
+                if self.parent.is_ad:
                     log.info(f"[{app_name}] Skipping ad")
                     return
 
@@ -417,12 +420,14 @@ class Spotify:
             self.update_metadata()
             # Update trackid
             self.trackid = new_trackid
+            # Update Ad detection
+            self.detect_ad()
             # Update track name
             self.track = self.get_track()
             # Trigger event method
             self.playing_song_changed()
-            # Update track counter
-            if _use_internal_track_counter and new_trackid not in recorded_tracks.keys():
+            # Update internal track counter, do not count ads and already recorded tracks
+            if _use_internal_track_counter and not self.is_ad and new_trackid not in recorded_tracks.keys():
                 global internal_track_counter
                 internal_track_counter += 1
 
